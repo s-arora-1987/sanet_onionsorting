@@ -14,7 +14,7 @@ The following are the steps to be followed to get this package working:
 
   Assuming you have a working version of Ubuntu (This package has been built and tested on Ubuntu 18.04)
   
-  1.) Install ROS (This package was built on ROS Kinectic, for other versions you might need to make appropriate changes)
+  1.) Install ROS (This package was built on ROS Melodic, for other versions you might need to make appropriate changes)
   
    [ROS Melodic](https://wiki.ros.org/melodic/Installation/Ubuntu)
       
