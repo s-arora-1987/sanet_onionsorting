@@ -53,8 +53,8 @@ def getpred(msg):
                     tlx, tly, brx, bry = int(xyxy[0]), int(xyxy[1]), int(xyxy[2]), int(xyxy[3])
                     centx, centy = int((tlx+brx)/2), int((tly+bry)/2)
                     if int(cls) == 0 or int(cls) == 1: 
-                        print("\ntlx, tly, brx, bry, cls: ",tlx, tly, brx, bry, int(cls))
-                        print(f"\nCentroid: {centx}, {centy}")
+                        # print("\ntlx, tly, brx, bry, cls: ",tlx, tly, brx, bry, int(cls))
+                        # print(f"\nCentroid: {centx}, {centy}")
                         centxs.append(centx)
                         centys.append(centy)
                         colors.append(cls)

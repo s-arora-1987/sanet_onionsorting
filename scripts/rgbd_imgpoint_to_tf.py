@@ -29,6 +29,11 @@ from geometry_msgs.msg import PoseStamped
 from sawyer_irl_project.msg import OBlobs
 from sanet_onionsorting.srv import yolo_srv
 
+from sensor_msgs.msg import PointCloud2
+import struct
+import math 
+pcl = None 
+use_depthimage = False
 
 class Camera():
     def __init__(self, camera_name, rgb_topic, depth_topic, camera_info_topic, response = None, choice = None):
@@ -53,6 +58,7 @@ class Camera():
         self.colors = response.color
 
         self.poses = []
+        self.poses_pcl = []
         self.rays = []
         self.OBlobs_x = []
         self.OBlobs_y = []
@@ -76,7 +82,7 @@ class Camera():
 
         self.camera_model = image_geometry.PinholeCameraModel()
 
-        rospy.loginfo('Camera {} initialised, {}, {}, {}'.format(self.camera_name, rgb_topic, depth_topic, camera_info_topic))
+        # rospy.loginfo('Camera {} initialised, {}, {}, {}'.format(self.camera_name, rgb_topic, depth_topic, camera_info_topic))
 
         q = 25
 
@@ -86,7 +92,17 @@ class Camera():
         # self.tss = message_filters.ApproximateTimeSynchronizer([self.sub_rgb, self.sub_depth, self.sub_camera_info], queue_size=15, slop=0.4)
         self.tss = message_filters.ApproximateTimeSynchronizer([self.sub_rgb, self.sub_depth, self.sub_camera_info], queue_size = 30, slop = 0.5)
         #self.tss = message_filters.TimeSynchronizer([sub_rgb], 10)
-        self.tss.registerCallback(self.callback)
+
+        # rospy.loginfo("initialized self.sub_rgb self.sub_depth self.sub_camera_info self.tss ")
+        
+        if use_depthimage: 
+            self.tss.registerCallback(self.callback)
+        else:
+            # use point cloud data
+            self.tss.registerCallback(self.callback_pcl)
+        
+        # rospy.loginfo("repeating self.tss.registerCallback")
+        
 
     def callback(self, rgb_msg, depth_msg, camera_info_msg):
         """
@@ -94,7 +110,7 @@ class Camera():
                 RGB and Depth image and publishes 3D poses wrt required reference frame.
         """
 
-        # print "\nWe're in Callback!!\n"
+        print " \n We're in Callback!! "
         self.camera_model.fromCameraInfo(camera_info_msg)
         # img =  np.frombuffer(rgb_msg.data, dtype=np.uint8).reshape(rgb_msg.height, rgb_msg.width, -1).astype('float32')
         # img = img/255
@@ -124,6 +140,7 @@ class Camera():
         if len(self.poses) > 0:
 
             self.getCam2Worldtf()
+            print("rgbd_imgpoint file: len(self.poses) > 0 satisfied getCam2Worldtf() executed")
 
             # self.br.sendTransform(self.pose,(0,0,0,1),rospy.Time.now(),"clicked_object",self.camera_model.tfFrame())
             # self.marker_pub.publish(self.generate_marker(rospy.Time(0), self.get_tf_frame(), self.pose))
@@ -132,9 +149,42 @@ class Camera():
             ob.y = self.OBlobs_y
             ob.z = self.OBlobs_z
             ob.color = self.colors
-            # print 'Here are the 3D locations: \n', ob
+            self.pose3D_pub.publish(ob)
+            # print ('rgbd_imgpoint file: Here are the 3D locations: \n', ob)
+            self.poses = []
+            self.poses_pcl = []
+            self.rays = []  
+            self.OBlobs_x = []
+            self.OBlobs_y = []
+            self.OBlobs_z = []
+            ob = None
+
+    def callback_pcl(self, rgb_msg, depth_msg, camera_info_msg):
+        """
+        @brief  Callback function for the ROS Subscriber that takes time synchronized 
+                RGB and Depth image and publishes 3D poses wrt required reference frame.
+        """
+
+        print " \n We're in Callback using point cloud!! "
+        self.camera_model.fromCameraInfo(camera_info_msg)
+        self.convertto3D_usingCloud()
+        self.poses = self.poses_pcl
+
+        if len(self.poses) > 0:
+
+            self.getCam2Worldtf()
+            print("rgbd_imgpoint file: len(self.poses) > 0 satisfied getCam2Worldtf() executed")
+
+            # self.br.sendTransform(self.pose,(0,0,0,1),rospy.Time.now(),"clicked_object",self.camera_model.tfFrame())
+            # self.marker_pub.publish(self.generate_marker(rospy.Time(0), self.get_tf_frame(), self.pose))
+            ob = OBlobs()
+            ob.x = self.OBlobs_x
+            ob.y = self.OBlobs_y
+            ob.z = self.OBlobs_z
+            ob.color = self.colors
             self.pose3D_pub.publish(ob)
             self.poses = []
+            self.poses_pcl = []
             self.rays = []  
             self.OBlobs_x = []
             self.OBlobs_y = []
@@ -155,7 +205,7 @@ class Camera():
             camerapoint.pose.position.x = self.poses[i][0]   
             camerapoint.pose.position.y = self.poses[i][1]   
             camerapoint.pose.position.z = self.poses[i][2]
-            # print "\nCamerapoint: \n", camerapoint
+            # print "\n Camerapoint: \n", camerapoint
             tf_buffer = tf2_ros.Buffer(rospy.Duration(1200.0)) # tf buffer length
             tf_listener = tf2_ros.TransformListener(tf_buffer)
             cam_to_root_tf = tf_buffer.lookup_transform("root",
@@ -163,7 +213,7 @@ class Camera():
                                         rospy.Time(0), # get the tf at first available time
                                         rospy.Duration(1.0)) # wait for 1 second
             tf_point = tf2_geometry_msgs.do_transform_pose(camerapoint, cam_to_root_tf)
-            # print '3D pose wrt world: ', tf_point
+            # print 'getCam2Worldtf: 3D pose wrt world: ', tf_point
 
             self.OBlobs_x.append(tf_point.pose.position.x)
             self.OBlobs_y.append(tf_point.pose.position.y)
@@ -318,10 +368,14 @@ class Camera():
                 br_y = int(clamp(self.ys[i]+bbox_width/2, 0, self.latest_depth_32FC1.shape[1]))
                 # print('\n x, y, tl_x, tl_y, br_x, br_y: ',(self.xs[i], self.ys[i]), (tl_x, tl_y, br_x, br_y))
                 roi = self.latest_depth_32FC1[tl_y:br_y, tl_x:br_x]
-                depth_distances.append(np.max(roi))
+                print "\nThis is the roi: \n", roi 
+                if len(roi) > 0:
+                    print "\nLength of roi: \n", len(roi)
+                    depth_distances.append(np.max(roi))
+                else: continue
 
                 if not np.isnan(depth_distances).any():
-                    # print "\nNo Nan values in depth values\n"
+                    # print ("\n rgbd_imgpoint file convertto3D: No Nan values in depth values\n")
                     break
 
         # print('distance (crowflies) from camera to point: {}m'.format(depth_distances))
@@ -332,9 +386,55 @@ class Camera():
                 self.rays.append(np.array(ray)/1000); 
                 self.poses.append(np.array(pose)/1000)
             else:
+                print("without point cloud, onion location w.r.t. camera ",np.array(pose))
                 self.rays.append(ray); self.poses.append(pose)
-	# print '(x,y): ',self.x,self.y
-	# print '3D pose: ', self.pose
+    # print '(x,y): ',self.xs,self.ys
+    # print '3D pose: ', self.pose
+
+    def convertto3D_usingCloud(self):
+        """
+        @brief  Converts the point(s) provided as input into 3D coordinates wrt camera.
+        """
+        global pcl
+        print("convertto3D_usingCloud, pcl == None ",(not pcl))
+        average_wdw_sz = 6 
+        for i in range(len(self.xs)):
+            list_x,list_y,list_z = [],[],[] 
+            cx2d=self.xs[i]
+            cy2d=self.ys[i]
+            for u in range(int(cx2d-average_wdw_sz/2),int(cx2d+average_wdw_sz/2+1)):
+                for v in range(int(cy2d-average_wdw_sz/2),int(cy2d+average_wdw_sz/2+1)):
+                    # print("u,v ",u,v)
+                    point_index = u  + v * (pcl.row_step/pcl.point_step)
+                    # point_idx_x = point_index + pcl.fields[0].offset
+                    # point_idx_y = point_index + pcl.fields[1].offset
+                    # point_idx_z = point_index + pcl.fields[2].offset
+                    str_point = pcl.data[point_index*pcl.point_step:(point_index+1)*pcl.point_step]
+                    (x,y,z) = struct.unpack('fff'+'x'*20, str_point)
+                    # print("(x,y,z) ", (x,y,z))
+                    if not math.isnan(x) and not math.isnan(y) and not math.isnan(z): # and x!= 0.0 and y!=0.0 and z !=0.0:
+                        list_x.append(x)
+                        list_y.append(y)
+                        list_z.append(z)
+            if len(list_x) == 0:
+                print("pixel for center of bounding box ",(cx2d,cy2d))
+                print("all cloud points are Nans on surface of this onion ",i)
+                continue
+                # return 
+
+            array_avgxyz = [np.mean(list_x),np.mean(list_y),np.mean(list_z)]
+            # print("xyz camera frame ",array_avgxyz)
+            position_cameraframe = array_avgxyz / np.linalg.norm(array_avgxyz)
+            radius = 0.025 # estimate
+            position_cameraframe = array_avgxyz+radius*position_cameraframe
+
+            print("Using pointcloud, onion location w.r.t. camera ",position_cameraframe)
+            self.poses_pcl.append(position_cameraframe)
+
+def cbk_makeCloudGlobal(msg):
+    global pcl
+    pcl = msg
+    return
 
 def main():
     """
@@ -364,6 +464,9 @@ def main():
             depthtopic = '/kinect_V2/depth/image_raw'
             camerainfo = '/kinect_V2/rgb/camera_info'
 
+        rospy.Subscriber("/kinect_V2/depth/points", PointCloud2, cbk_makeCloudGlobal)
+        rospy.sleep(0.1)
+
         # response = None
         # camera = Camera('kinectv2', rgbtopic, depthtopic, camerainfo, response, choice)
 
@@ -373,17 +476,17 @@ def main():
             gip_service = rospy.ServiceProxy("/get_predictions", yolo_srv)
             response = gip_service()
             if len(response.centx) > 0:
-                print '\nCentroid of onions: [x1,x2...],[y1,y2...] \n',response.centx, response.centy
+                print '\n Starting point of trasnformation. \n  Yolo returned centroids: \n',response.centx, response.centy
                 camera = Camera('kinectv2', rgbtopic, depthtopic, camerainfo, response, choice)
             else:
-                print '\nWaiting for detections from yolo'
-            rospy.sleep(2)
+                print '\n Starting point of trasnformation. \n Waiting for detections from yolo'
+            rospy.sleep(1.0)
+        
         # rospy.spin()
 
     except rospy.ROSInterruptException:
         print("Shutting down")
         cv2.destroyAllWindows()
-
 
 if __name__ == '__main__':    
     main()

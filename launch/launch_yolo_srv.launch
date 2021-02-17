@@ -7,5 +7,5 @@
 <launch>
 <arg name="weights" default="gazebo"/>
 <node pkg="sanet_onionsorting" type="yolo_service.py" name="yolo_service" args="$(arg weights)"/>
-<node pkg="sanet_onionsorting" type="rgbd_imgpoint_to_tf.py" name="yolo_client"/>
+<node pkg="sanet_onionsorting" type="rgbd_imgpoint_to_tf.py" name="yolo_client"  args="gazebo" output="screen"/>
 </launch>
