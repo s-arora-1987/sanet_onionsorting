@@ -88,6 +88,8 @@ def main():
             # rospy.Subscriber("/kinect2/hd/points", Image, grabdepth)
         elif (choice == "gazebo"):
             weights = "best_gazebokinect.pt"
+            # weights = "best_gazebokinect_latest.pt"
+            # weights = "best_gazebokinect_trainedWdAugmentedData.pt"
             # for kinect gazebo
             print(f"{weights} weights selected with gazebo kinect")
             rospy.Subscriber("/kinect_V2/rgb/image_raw", Image, grabrgb)

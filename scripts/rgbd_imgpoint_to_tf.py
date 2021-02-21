@@ -34,7 +34,8 @@ import struct
 import math
  
 pcl = None 
-use_depthimage = False
+use_depthimage = True
+updated_centroids = True
 
 class Camera():
     def __init__(self, camera_name, rgb_topic, depth_topic, camera_info_topic, response = None, choice = None):
@@ -64,6 +65,7 @@ class Camera():
         self.OBlobs_x = []
         self.OBlobs_y = []
         self.OBlobs_z = []
+        self.indices_foundOnions = []
 
         self.pose3D_pub = rospy.Publisher('object_location', OBlobs, queue_size=1)
 
@@ -84,22 +86,24 @@ class Camera():
         self.camera_model = image_geometry.PinholeCameraModel()
 
         # rospy.loginfo('Camera {} initialised, {}, {}, {}'.format(self.camera_name, rgb_topic, depth_topic, camera_info_topic))
+        self.tf_frame_pcloud = None
 
-        q = 25
-
-        self.sub_rgb = message_filters.Subscriber(rgb_topic, Image, queue_size = q)
-        self.sub_depth = message_filters.Subscriber(depth_topic, Image, queue_size = q)
+        q = 1
         self.sub_camera_info = message_filters.Subscriber(camera_info_topic, CameraInfo, queue_size = q)
-        # self.tss = message_filters.ApproximateTimeSynchronizer([self.sub_rgb, self.sub_depth, self.sub_camera_info], queue_size=15, slop=0.4)
-        self.tss = message_filters.ApproximateTimeSynchronizer([self.sub_rgb, self.sub_depth, self.sub_camera_info], queue_size = 30, slop = 0.5)
-        #self.tss = message_filters.TimeSynchronizer([sub_rgb], 10)
-
-        # rospy.loginfo("initialized self.sub_rgb self.sub_depth self.sub_camera_info self.tss ")
-        
         if use_depthimage: 
+            
+            self.sub_rgb = message_filters.Subscriber(rgb_topic, Image, queue_size = q)
+            self.sub_depth = message_filters.Subscriber(depth_topic, Image, queue_size = q)
+            
+            # self.tss = message_filters.ApproximateTimeSynchronizer([self.sub_rgb, self.sub_depth, self.sub_camera_info], queue_size=15, slop=0.4)
+            self.tss = message_filters.ApproximateTimeSynchronizer([self.sub_rgb, self.sub_depth, self.sub_camera_info], queue_size = 30, slop = 0.5)
+            #self.tss = message_filters.TimeSynchronizer([sub_rgb], 10)
+
+            # rospy.loginfo("initialized self.sub_rgb self.sub_depth self.sub_camera_info self.tss ")
             self.tss.registerCallback(self.callback)
         else:
-            # use point cloud data
+            self.sub_pcloud = message_filters.Subscriber("/kinect_V2/depth/points", PointCloud2, queue_size = q)
+            self.tss = message_filters.ApproximateTimeSynchronizer([self.sub_pcloud,self.sub_camera_info], queue_size = 5, slop = 1.0)
             self.tss.registerCallback(self.callback_pcl)
         
         # rospy.loginfo("repeating self.tss.registerCallback")
@@ -111,7 +115,8 @@ class Camera():
                 RGB and Depth image and publishes 3D poses wrt required reference frame.
         """
 
-        print " \n We're in Callback!! "
+        print (" \n We're in Callback!! contents of current Yolo response {}".format((self.xs,self.ys,self.colors)))
+
         self.camera_model.fromCameraInfo(camera_info_msg)
         # img =  np.frombuffer(rgb_msg.data, dtype=np.uint8).reshape(rgb_msg.height, rgb_msg.width, -1).astype('float32')
         # img = img/255
@@ -136,12 +141,17 @@ class Camera():
         # cv2.setMouseCallback("Image window", self.mouse_callback)
         # cv2.waitKey(1)
 
-        self.convertto3D()
+        self.poses, self.rays, self.indices_foundOnions = [], [], [] 
+        self.convertto3D() 
+        print("post convertto3D len(self.indices_foundOnions)={} len(self.poses)={} ".
+        format(len(self.indices_foundOnions),len(self.poses)) ) 
 
         if len(self.poses) > 0:
 
+            self.OBlobs_x, self.OBlobs_y, self.OBlobs_z = [], [], [] 
             self.getCam2Worldtf()
-            print("rgbd_imgpoint file: len(self.poses) > 0 satisfied getCam2Worldtf() executed")
+            print("len(self.poses) > 0 satisfied post getCam2Worldtf() executed len(self.OBlobs_x)={} len(self.colors)={} "
+            .format(len(self.OBlobs_x),len(self.colors)) )
 
             # self.br.sendTransform(self.pose,(0,0,0,1),rospy.Time.now(),"clicked_object",self.camera_model.tfFrame())
             # self.marker_pub.publish(self.generate_marker(rospy.Time(0), self.get_tf_frame(), self.pose))
@@ -149,18 +159,29 @@ class Camera():
             ob.x = self.OBlobs_x
             ob.y = self.OBlobs_y
             ob.z = self.OBlobs_z
-            ob.color = self.colors
+            ob.color = []
+            for i in self.indices_foundOnions:
+                print("i ",i)
+                ob.color.append(self.colors[i])
+
+            print("published object locations ",ob) 
             self.pose3D_pub.publish(ob)
             # print ('rgbd_imgpoint file: Here are the 3D locations: \n', ob)
+            
+            global updated_centroids 
+            updated_centroids = False
+            while not updated_centroids:
+                rospy.sleep(0.05)
+                print("waiting for main loop to update centroids and predictions")
+
             self.poses = []
-            self.poses_pcl = []
             self.rays = []  
             self.OBlobs_x = []
             self.OBlobs_y = []
             self.OBlobs_z = []
             ob = None
 
-    def callback_pcl(self, rgb_msg, depth_msg, camera_info_msg):
+    def callback_pcl(self, pcloud_msg, camera_info_msg):
         """
         @brief  Callback function for the ROS Subscriber that takes time synchronized 
                 RGB and Depth image and publishes 3D poses wrt required reference frame.
@@ -168,22 +189,44 @@ class Camera():
 
         print " \n We're in Callback using point cloud!! "
         self.camera_model.fromCameraInfo(camera_info_msg)
-        self.convertto3D_usingCloud()
+        self.convertto3D_usingpcloud(pcloud_msg)
         self.poses = self.poses_pcl
 
         if len(self.poses) > 0:
-
+            
+            self.OBlobs_x, self.OBlobs_y, self.OBlobs_z = [], [], [] 
             self.getCam2Worldtf()
             print("rgbd_imgpoint file: len(self.poses) > 0 satisfied getCam2Worldtf() executed")
-
             # self.br.sendTransform(self.pose,(0,0,0,1),rospy.Time.now(),"clicked_object",self.camera_model.tfFrame())
             # self.marker_pub.publish(self.generate_marker(rospy.Time(0), self.get_tf_frame(), self.pose))
+
             ob = OBlobs()
             ob.x = self.OBlobs_x
             ob.y = self.OBlobs_y
             ob.z = self.OBlobs_z
-            ob.color = self.colors
-            self.pose3D_pub.publish(ob)
+            ob.color = []
+            # filtering colors for onions not identified due to depth distance empty
+            for i in self.indices_foundOnions:
+                print("i ",i)
+                ob.color.append(self.colors[i])
+            
+            # filtering onion blobs outside conveyor area:            
+            bxs = ob.x
+            bys = ob.y
+            bzs = ob.z
+            clrs = ob.color
+            ob2 = OBlobs()
+            ob2.x, ob2.y, ob2.z, ob2.color = [], [], [], []
+            for i in range(len(bxs)): 
+                if bxs[i] > 0.7 and bxs[i] < 0.9: 
+                    ob2.x.append(bxs[i]) 
+                    ob2.y.append(bys[i]) 
+                    ob2.z.append(bzs[i]) 
+                    ob2.color.append(clrs[i]) 
+            
+            print("final ob2 ",ob2) 
+
+            self.pose3D_pub.publish(ob2)
             self.poses = []
             self.poses_pcl = []
             self.rays = []  
@@ -197,11 +240,40 @@ class Camera():
         @brief  Transforms 3D point in the camera frame to world frame 
                 by listening to static transform between camera and world.
         """
-    
-        # print "\n Camera frame is: ",self.get_tf_frame()
+
+        print "\n getCam2Worldtf: Camera frame used for transformation: ",self.get_tf_frame()
         for i in range(len(self.poses)):
             camerapoint =  tf2_geometry_msgs.tf2_geometry_msgs.PoseStamped()
             camerapoint.header.frame_id = self.get_tf_frame()
+            camerapoint.header.stamp = rospy.Time(0)
+            camerapoint.pose.position.x = self.poses[i][0]   
+            camerapoint.pose.position.y = self.poses[i][1]   
+            camerapoint.pose.position.z = self.poses[i][2]
+            # print "\n Camerapoint: \n", camerapoint
+            tf_buffer = tf2_ros.Buffer(rospy.Duration(1200.0)) # tf buffer length
+            tf_listener = tf2_ros.TransformListener(tf_buffer)
+            cam_to_root_tf = tf_buffer.lookup_transform("root",
+                                        self.get_tf_frame(), #source frame
+                                        rospy.Time(0), # get the tf at first available time
+                                        rospy.Duration(1.0)) # wait for 1 second
+            tf_point = tf2_geometry_msgs.do_transform_pose(camerapoint, cam_to_root_tf)
+            # print 'getCam2Worldtf: 3D pose wrt world: ', tf_point
+            
+            self.OBlobs_x.append(tf_point.pose.position.x)
+            self.OBlobs_y.append(tf_point.pose.position.y)
+            self.OBlobs_z.append(tf_point.pose.position.z)
+        return
+
+    def getCam2Worldtf_pcloud(self):
+        """
+        @brief  Transforms 3D point in the camera frame to world frame 
+                by listening to static transform between camera and world.
+        """
+    
+        print "\n getCam2Worldtf: Camera frame used for transformation: ",self.get_tf_frame()
+        for i in range(len(self.poses)):
+            camerapoint =  tf2_geometry_msgs.tf2_geometry_msgs.PoseStamped()
+            camerapoint.header.frame_id = self.get_tf_frame_pcloud()
             camerapoint.header.stamp = rospy.Time(0)
             camerapoint.pose.position.x = self.poses[i][0]   
             camerapoint.pose.position.y = self.poses[i][1]   
@@ -236,6 +308,12 @@ class Camera():
         @return camera transform frame.
         """
         return self.camera_model.tfFrame()
+
+    def get_tf_frame_pcloud(self):
+        """
+        @return camera transform frame.
+        """
+        return self.tf_frame_pcloud
 
     def is_ready(self):
         """
@@ -363,42 +441,62 @@ class Camera():
         #Small ROI around clicked point grows larger if no depth value found
         for i in range(len(self.xs)):
             for bbox_width in range(20, int(self.latest_depth_32FC1.shape[0]/3), 5):
+                roi = None
                 tl_x = int(clamp(self.xs[i]-bbox_width/2, 0, self.latest_depth_32FC1.shape[0]))
                 br_x = int(clamp(self.xs[i]+bbox_width/2, 0, self.latest_depth_32FC1.shape[0]))
                 tl_y = int(clamp(self.ys[i]-bbox_width/2, 0, self.latest_depth_32FC1.shape[1]))
                 br_y = int(clamp(self.ys[i]+bbox_width/2, 0, self.latest_depth_32FC1.shape[1]))
                 # print('\n x, y, tl_x, tl_y, br_x, br_y: ',(self.xs[i], self.ys[i]), (tl_x, tl_y, br_x, br_y))
                 roi = self.latest_depth_32FC1[tl_y:br_y, tl_x:br_x]
-                print "\nThis is the roi: \n", roi 
-                if len(roi) > 0:
-                    print "\nLength of roi: \n", len(roi)
-                    depth_distances.append(np.max(roi))
-                else: continue
+                rospy.sleep(0.1)
+                # print "\n roi: ",(roi)
+                print " roi.shape: ",(roi.shape)
+                # print " roi.shape[1]: ",roi.shape[1]
 
-                if not np.isnan(depth_distances).any():
-                    # print ("\n rgbd_imgpoint file convertto3D: No Nan values in depth values\n")
+                rospy.sleep(1.0)
+                if roi.shape[1] > 0 and not np.isnan(np.max(roi)):
+                    print "\nroi.shape[1] > 0 and no NAN"
+                    depth_distances.append(np.max(roi)) 
+                    if i not in self.indices_foundOnions: 
+                        self.indices_foundOnions.append(i) 
+                    
+                    break
+                else: 
+                    depth_distances.append(-1)
                     break
 
+                # if not np.isnan(depth_distances).any():
+                    # print ("\n rgbd_imgpoint file convertto3D: No Nan values in depth values\n")
+                    # break
+        
+        # print ( "\n number of xs: {} number of crowflies found: {}\n ".format(len(self.xs),len(depth_distances)) )
         # print('distance (crowflies) from camera to point: {}m'.format(depth_distances))
-        for i in range(len(self.xs)):
-            ray, pose = self.process_ray((self.xs[i], self.ys[i]), depth_distances[i])
-            if self.choice == "real":
-                ''' NOTE: The Real Kinect produces values in mm while ROS operates in m. '''
-                self.rays.append(np.array(ray)/1000); 
-                self.poses.append(np.array(pose)/1000)
-            else:
-                print("without point cloud, onion location w.r.t. camera ",np.array(pose))
-                self.rays.append(ray); self.poses.append(pose)
+        self.rays = []
+        self.poses = []
+        for i in range(len(depth_distances)):
+            if depth_distances[i] != -1:
+                print("current input x,y,crowfly-depth to process ray ",((self.xs[i], self.ys[i]), depth_distances[i]),"\n")
+                ray, pose = self.process_ray((self.xs[i], self.ys[i]), depth_distances[i])
+                if self.choice == "real":
+                    ''' NOTE: The Real Kinect produces values in mm while ROS operates in m. '''
+                    self.rays.append(np.array(ray)/1000); 
+                    self.poses.append(np.array(pose)/1000)
+                else:
+                    print("without point cloud, onion location w.r.t. camera ",np.array(pose))
+                    self.rays.append(ray); self.poses.append(pose)
     # print '(x,y): ',self.xs,self.ys
     # print '3D pose: ', self.pose
 
-    def convertto3D_usingCloud(self):
+    def convertto3D_usingpcloud(self,pcloud_msg):
         """
         @brief  Converts the point(s) provided as input into 3D coordinates wrt camera.
         """
-        global pcl
-        print("convertto3D_usingCloud, pcl == None ",(not pcl))
-        average_wdw_sz = 6 
+        # global pcl
+        pcl = pcloud_msg
+        print("convertto3D_usingpcloud, pcl == None ",(not pcl))
+        self.tf_frame_pcloud = pcl.header.frame_id
+        print("frame_id for point cloud data ",(pcl.header.frame_id))
+        average_wdw_sz = 4 
         for i in range(len(self.xs)):
             list_x,list_y,list_z = [],[],[] 
             cx2d=self.xs[i]
@@ -421,21 +519,24 @@ class Camera():
                 print("pixel for center of bounding box ",(cx2d,cy2d))
                 print("all cloud points are Nans on surface of this onion ",i)
                 continue
-                # return 
+                # return
+            else:
+                if i not in self.indices_foundOnions:
+                    self.indices_foundOnions.append(i)
 
             array_avgxyz = [np.mean(list_x),np.mean(list_y),np.mean(list_z)]
             # print("xyz camera frame ",array_avgxyz)
             position_cameraframe = array_avgxyz / np.linalg.norm(array_avgxyz)
-            radius = 0.025 # estimate
+            radius = 0.1 # estimate
             position_cameraframe = array_avgxyz+radius*position_cameraframe
 
             print("Using pointcloud, onion location w.r.t. camera ",position_cameraframe)
             self.poses_pcl.append(position_cameraframe)
 
-def cbk_makeCloudGlobal(msg):
-    global pcl
-    pcl = msg
-    return
+# def cbk_makeCloudGlobal(msg):
+#     global pcl
+#     pcl = msg
+#     return
 
 def main():
     """
@@ -465,23 +566,32 @@ def main():
             depthtopic = '/kinect_V2/depth/image_raw'
             camerainfo = '/kinect_V2/rgb/camera_info'
 
-        rospy.Subscriber("/kinect_V2/depth/points", PointCloud2, cbk_makeCloudGlobal)
+        # rospy.Subscriber("/kinect_V2/depth/points", PointCloud2, cbk_makeCloudGlobal)
         rospy.sleep(0.1)
 
         # response = None
-        # camera = Camera('kinectv2', rgbtopic, depthtopic, camerainfo, response, choice)
+        gip_service = rospy.ServiceProxy("/get_predictions", yolo_srv)
+        response = gip_service()
+        camera = Camera('kinectv2', rgbtopic, depthtopic, camerainfo, response, choice)
 
         while not rospy.is_shutdown():
 
             print '\nUpdating YOLO predictions...\n'
-            gip_service = rospy.ServiceProxy("/get_predictions", yolo_srv)
             response = gip_service()
             if len(response.centx) > 0:
                 print '\n Starting point of trasnformation. \n  Yolo returned centroids: \n',response.centx, response.centy
-                camera = Camera('kinectv2', rgbtopic, depthtopic, camerainfo, response, choice)
+                # camera = Camera('kinectv2', rgbtopic, depthtopic, camerainfo, response, choice)
+                # updated only when blobs from previous run has been published
+                global updated_centroids 
+                if updated_centroids == False:
+                    camera.xs = response.centx
+                    camera.ys = response.centy
+                    camera.colors = response.color
+                    print("main loop setting updated_centroids = True")
+                    updated_centroids = True
             else:
                 print '\n Starting point of trasnformation. \n Waiting for detections from yolo'
-            rospy.sleep(1.0)
+            rospy.sleep(2.0)
         
         # rospy.spin()
 
