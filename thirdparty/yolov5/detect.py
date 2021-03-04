@@ -9,9 +9,14 @@ Please make sure you provide credit if you are using this code.
 import torch.backends.cudnn as cudnn
 
 import time
+import os
+home = os.environ['HOME']
+def get_home():
+    global home
+    return home
 
 import sys
-sys.path.append('/home/psuresh/catkin_ws/src/sanet_onionsorting/thirdparty/yolov5')
+sys.path.append(get_home() + '/catkin_ws/src/sanet_onionsorting/thirdparty/yolov5')
 '''
 NOTE: When accessing this file via ROS, it doesn't seem to find the directories without
 specifying an absolute path. If you're reading this and know of a way to get
@@ -22,14 +27,14 @@ from utils.datasets import *
 from utils import torch_utils
 from utils.utils import *
 
-sys.path.remove('/home/psuresh/catkin_ws/src/sanet_onionsorting/thirdparty/yolov5')
+sys.path.remove(get_home() + '/catkin_ws/src/sanet_onionsorting/thirdparty/yolov5')
 
 class YOLO():
     def __init__(self, weightsfile = 'best_realkinect.pt'):
         
-        self.weights = '/home/psuresh/catkin_ws/src/sanet_onionsorting/thirdparty/yolov5/weights/'+ weightsfile
-        self.source = '/home/psuresh/catkin_ws/src/sanet_onionsorting/thirdparty/yolov5/inference/images'
-        self.output = '/home/psuresh/catkin_ws/src/sanet_onionsorting/thirdparty/yolov5/inference/output'
+        self.weights = get_home() + '/catkin_ws/src/sanet_onionsorting/thirdparty/yolov5/weights/'+ weightsfile
+        self.source = get_home() + '/catkin_ws/src/sanet_onionsorting/thirdparty/yolov5/inference/images'
+        self.output = get_home() + '/catkin_ws/src/sanet_onionsorting/thirdparty/yolov5/inference/output'
         self.img_size = 640
         self.conf_thres = 0.75
         self.iou_thres = 0.5

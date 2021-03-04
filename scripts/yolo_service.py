@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 # coding: utf8
 import sys
+import os 
+home = os.environ['HOME']
+def get_home():
+    global home
+    return home
 
 # append py2 in order to import rospy
 sys.path.append('/usr/lib/python2.7/dist-packages')
@@ -12,7 +17,7 @@ sys.path.remove('/usr/lib/python2.7/dist-packages')
 from sanet_onionsorting.srv import yolo_srv
 import numpy as np
 import copy
-sys.path.append('/home/psuresh/catkin_ws/src/sanet_onionsorting/')
+sys.path.append(get_home() + '/catkin_ws/src/sanet_onionsorting/')
 from thirdparty.yolov5.detect import YOLO
 from time import time
 same_flag = 0
